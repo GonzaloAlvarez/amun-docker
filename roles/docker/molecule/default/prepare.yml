@@ -1,0 +1,17 @@
+---
+- name: Prepare
+  hosts: all
+  tasks:
+    - name: Create Docker config directory
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Configure Docker to use vfs storage driver
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: '{"storage-driver": "vfs"}'
+        mode: "0644"
+      become: true

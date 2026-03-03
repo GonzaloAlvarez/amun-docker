@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AMUN_TMPDIR=$(mktemp -d)
+PLATFORM="${1:-}"
+
+trap 'rm -rf "$AMUN_TMPDIR"' EXIT SIGINT SIGTERM
+
+git clone https://github.com/GonzaloAlvarez/amun.git "$AMUN_TMPDIR/amun"
+cp -r "$SCRIPT_DIR" "$AMUN_TMPDIR/amun-docker"
+
+if [ -n "$PLATFORM" ]; then
+    "$AMUN_TMPDIR/amun/test" "$PLATFORM" -p docker
+else
+    "$AMUN_TMPDIR/amun/test" -p docker
+fi

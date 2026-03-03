@@ -1,0 +1,14 @@
+---
+- name: Verify
+  hosts: all
+  tasks:
+    - name: Run hello-world container
+      ansible.builtin.command: docker run hello-world
+      register: hello_world
+      changed_when: false
+
+    - name: Verify hello-world output
+      assert:
+        that:
+          - hello_world.rc == 0
+          - "'Hello from Docker!' in hello_world.stdout"

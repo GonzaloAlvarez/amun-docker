@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  role_name: docker
+  namespace: gonzaloalvarez
+  author: Gonzalo Alvarez
+  description: Install Docker and Docker Compose across platforms
+  license: GPL-3.0
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Debian
+      versions:
+        - bookworm
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: MacOSX
+      versions:
+        - all
+    - name: ArchLinux
+      versions:
+        - all
+dependencies: []

@@ -1,0 +1,119 @@
+---
+- name: Install Docker prerequisites (Debian)
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+  become: true
+  retries: 5
+  delay: 5
+  register: apt_prerequisites
+  until: apt_prerequisites is success
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Create apt keyrings directory (Debian)
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  become: true
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Add Docker GPG key (Debian)
+  ansible.builtin.get_url:
+    url: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}/gpg"
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+  become: true
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Add Docker apt repository (Debian)
+  ansible.builtin.apt_repository:
+    repo: "deb [arch={{ ansible_facts['architecture'] | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }} {{ ansible_facts['distribution_release'] }} stable"
+    state: present
+  become: true
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Install Docker packages (Debian)
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+  become: true
+  retries: 5
+  delay: 5
+  register: apt_docker
+  until: apt_docker is success
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Enable and start Docker service (Debian)
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+  become: true
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Add user to docker group (Debian)
+  ansible.builtin.user:
+    name: "{{ ansible_facts['user_id'] }}"
+    groups: docker
+    append: true
+  become: true
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Install Docker via Homebrew (macOS)
+  community.general.homebrew:
+    name:
+      - colima
+      - docker
+      - docker-compose
+    state: present
+  when: ansible_facts['os_family'] == 'Darwin'
+
+- name: Install Docker packages (Arch)
+  community.general.pacman:
+    name:
+      - docker
+      - docker-compose
+    state: present
+    update_cache: true
+  become: true
+  when: ansible_facts['os_family'] == 'Archlinux'
+
+- name: Enable and start Docker service (Arch)
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+  become: true
+  when: ansible_facts['os_family'] == 'Archlinux'
+
+- name: Add user to docker group (Arch)
+  ansible.builtin.user:
+    name: "{{ ansible_facts['user_id'] }}"
+    groups: docker
+    append: true
+  become: true
+  when: ansible_facts['os_family'] == 'Archlinux'
+
+- name: Verify Docker installation
+  ansible.builtin.command: docker --version
+  changed_when: false
+
+- name: Verify Docker Compose plugin (Debian)
+  ansible.builtin.command: docker compose version
+  changed_when: false
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Verify Docker Compose standalone (macOS/Arch)
+  ansible.builtin.command: docker-compose version
+  changed_when: false
+  when: ansible_facts['os_family'] != 'Debian'
