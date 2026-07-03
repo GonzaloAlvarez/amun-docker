@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# amun-docker — Layer 4 verify (§14.1). Pure shell; no python/ansible on target.
+# Confirms the resiliency machinery is installed + per-stack boot units are
+# enabled + reconcile cron is present.
+#
+#   ./verify                      # local host
+#   ./verify --host HOST [--user USER]   # over SSH
+set -u
+
+HOST=""; SSH_USER=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host) HOST="$2"; shift 2 ;;
+    --user) SSH_USER="$2"; shift 2 ;;
+    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+run() {
+  if [ -n "$HOST" ]; then ssh -o ConnectTimeout=8 -o BatchMode=yes "${SSH_USER:+$SSH_USER@}$HOST" "$1"
+  else bash -c "$1"; fi
+}
+
+pass=0; fail=0
+check() {  # check "label" "remote test command"
+  printf '  %-50s ' "$1"
+  if run "$2" >/dev/null 2>&1; then echo "PASS"; pass=$((pass + 1)); else echo "FAIL"; fail=$((fail + 1)); fi
+}
+
+echo "amun-docker resiliency verify${HOST:+ — $HOST}"
+echo "Core:"
+check "docker present"               "command -v docker"
+check "reconcile-stack.sh executable" "test -x /usr/local/lib/amun/reconcile-stack.sh"
+check "node-exporter textfile dir"    "test -d /var/lib/node_exporter/textfile_collector"
+
+echo "Per-stack boot units + reconcile cron:"
+units="$(run 'ls /etc/systemd/system/docker-compose@*.service 2>/dev/null' 2>/dev/null || true)"
+if [ -z "$units" ]; then
+  echo "  (no docker-compose@ units installed — no stack ships resiliency.yml yet?)"
+fi
+for u in $units; do
+  base="$(basename "$u")"; name="${base#docker-compose@}"; name="${name%.service}"
+  check "$name: boot unit enabled"       "systemctl is-enabled $base | grep -q enabled"
+  check "$name: reconcile cron installed" "grep -q reconcile-stack.sh /etc/cron.d/${name}-reconcile"
+done
+
+echo
+echo "PASS=$pass FAIL=$fail"
+[ "$fail" -eq 0 ]

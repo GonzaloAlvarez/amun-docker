@@ -15,3 +15,56 @@
         content: '{"storage-driver": "vfs"}'
         mode: "0644"
       become: true
+
+    # ── mock cn-* stacks so the resiliency tasks have something to discover ──
+    - name: Create mock stack dirs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ ansible_env.HOME }}/cn-mock-simple"
+        - "{{ ansible_env.HOME }}/cn-mock-nfs"
+        - "{{ ansible_env.HOME }}/cn-mock-nfs/scripts"
+
+    - name: Mock compose files (a single long-running service)
+      ansible.builtin.copy:
+        dest: "{{ ansible_env.HOME }}/{{ item }}/docker-compose.yml"
+        mode: "0644"
+        content: |
+          services:
+            sleeper:
+              image: alpine:3.20
+              command: ["sleep", "infinity"]
+              restart: "no"
+      loop:
+        - cn-mock-simple
+        - cn-mock-nfs
+
+    - name: Mock manifest — simple stack
+      ansible.builtin.copy:
+        dest: "{{ ansible_env.HOME }}/cn-mock-simple/resiliency.yml"
+        mode: "0644"
+        content: |
+          boot: { enabled: true }
+          reconcile: { enabled: true, schedule: "*/5 * * * *" }
+
+    - name: Mock manifest — nfs + ordering + custom cron
+      ansible.builtin.copy:
+        dest: "{{ ansible_env.HOME }}/cn-mock-nfs/resiliency.yml"
+        mode: "0644"
+        content: |
+          boot:
+            enabled: true
+            nfs_mount: /mnt/mock-nfs
+            after: [cn-mock-simple]
+            force_recreate: true
+          reconcile: { enabled: true }
+          cron:
+            - { name: prune, schedule: "0 4 * * *", script: scripts/prune.sh }
+
+    - name: Mock custom cron script
+      ansible.builtin.copy:
+        dest: "{{ ansible_env.HOME }}/cn-mock-nfs/scripts/prune.sh"
+        mode: "0755"
+        content: "#!/bin/sh\nexit 0\n"

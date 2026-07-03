@@ -1,0 +1,37 @@
+{{ ansible_managed | comment }}
+# Boot unit for the {{ item.name }} docker compose stack. Rendered by amun-docker
+# from {{ item.dir }}/resiliency.yml. Runs `docker compose up -d` at boot so the
+# stack recovers regardless of Docker's per-container restart state (which is
+# lost on an ungraceful reboot). Ongoing drift/exited repair is handled by the
+# /etc/cron.d/{{ item.name }}-reconcile job.
+{% set b = item.boot %}
+{% set after = ['docker.service', 'network-online.target'] + (b.after | default([]) | map('regex_replace', '^(.+)$', 'docker-compose@\\1.service') | list) %}
+[Unit]
+Description={{ item.name }} docker compose stack (amun-docker resiliency)
+Requires=docker.service
+After={{ after | join(' ') }}
+Wants=network-online.target
+{% if b.nfs_mount is defined and b.nfs_mount %}
+# RequiresMountsFor implicitly adds Requires= + After= on the mount unit, so the
+# stack can never start before the NFS share is mounted.
+RequiresMountsFor={{ b.nfs_mount }}
+{% endif %}
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User={{ deploy_user }}
+Group={{ deploy_user }}
+WorkingDirectory={{ item.dir }}
+Environment="PWD={{ item.dir }}"
+{% if b.nfs_mount is defined and b.nfs_mount %}
+ExecStartPre=/usr/bin/mountpoint -q {{ b.nfs_mount }}
+# Assert it is REALLY nfs, not the empty local placeholder a failed mount leaves.
+ExecStartPre=/bin/sh -c '[ "$(stat -f -c %%T {{ b.nfs_mount }})" = nfs ]'
+{% endif %}
+ExecStart=/usr/bin/docker compose -p {{ item.project }} up -d --remove-orphans{% if b.force_recreate | default(false) %} --force-recreate{% endif %}
+
+ExecStop=/usr/bin/docker compose -p {{ item.project }} down
+
+[Install]
+WantedBy=multi-user.target

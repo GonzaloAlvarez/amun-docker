@@ -12,3 +12,82 @@
         that:
           - hello_world.rc == 0
           - "'Hello from Docker!' in hello_world.stdout"
+
+    # ── resiliency: install correctness ──────────────────────────────────
+    - name: Stat installed artifacts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/systemd/system/docker-compose@cn-mock-simple.service
+        - /etc/systemd/system/docker-compose@cn-mock-nfs.service
+        - /etc/cron.d/cn-mock-simple-reconcile
+        - /etc/cron.d/cn-mock-nfs-reconcile
+        - /usr/local/lib/amun/reconcile-stack.sh
+        - /var/lib/node_exporter/textfile_collector
+      register: art
+
+    - name: All artifacts present
+      ansible.builtin.assert:
+        that: "item.stat.exists"
+        fail_msg: "missing: {{ item.item }}"
+      loop: "{{ art.results }}"
+      loop_control: { label: "{{ item.item }}" }
+
+    - name: Boot unit is enabled
+      ansible.builtin.command: systemctl is-enabled docker-compose@cn-mock-simple.service
+      register: en
+      changed_when: false
+    - ansible.builtin.assert:
+        that: "'enabled' in en.stdout"
+
+    - name: NFS unit rendered the mount gating + force-recreate + ordering
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/docker-compose@cn-mock-nfs.service
+      register: nfsunit
+    - ansible.builtin.assert:
+        that:
+          - "'RequiresMountsFor=/mnt/mock-nfs' in (nfsunit.content | b64decode)"
+          - "'--force-recreate' in (nfsunit.content | b64decode)"
+          - "'docker-compose@cn-mock-simple.service' in (nfsunit.content | b64decode)"
+          - "'stat -f -c' in (nfsunit.content | b64decode)"
+
+    - name: Reconcile cron calls the shared helper
+      ansible.builtin.slurp:
+        src: /etc/cron.d/cn-mock-simple-reconcile
+      register: cronf
+    - ansible.builtin.assert:
+        that: "'/usr/local/lib/amun/reconcile-stack.sh cn-mock-simple' in (cronf.content | b64decode)"
+
+    # ── resiliency: FUNCTIONAL — the exited-container repair path ─────────
+    - name: Bring the mock stack up
+      ansible.builtin.command: docker compose -p cn-mock-simple up -d
+      args: { chdir: "{{ ansible_env.HOME }}/cn-mock-simple" }
+      changed_when: true
+
+    - name: Stop the container (simulate the ungraceful-reboot exited class)
+      ansible.builtin.command: docker stop cn-mock-simple-sleeper-1
+      changed_when: true
+
+    - name: Run the reconcile helper
+      ansible.builtin.command: /usr/local/lib/amun/reconcile-stack.sh cn-mock-simple {{ ansible_env.HOME }}/cn-mock-simple
+      environment:
+        RESILIENCE_TEXTFILE_DIR: /var/lib/node_exporter/textfile_collector
+      register: recon
+      changed_when: true
+
+    - name: Sleeper is running again (exited container was repaired)
+      ansible.builtin.command: docker inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' cn-mock-simple-sleeper-1
+      register: sleeper_state
+      changed_when: false
+    - ansible.builtin.assert:
+        that: "'running' in sleeper_state.stdout"
+        fail_msg: "reconcile did not restart the exited container"
+
+    - name: Textfile metric written with a repair recorded
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/textfile_collector/resilience_cn-mock-simple.prom
+      register: prom
+    - ansible.builtin.assert:
+        that:
+          - "'resilience_reconcile_success{stack=\"cn-mock-simple\"' in (prom.content | b64decode)"
+          - "'resilience_reconcile_repairs_total' in (prom.content | b64decode)"

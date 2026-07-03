@@ -1,0 +1,134 @@
+---
+# Discover cn-* docker-compose stacks that ship a resiliency.yml manifest and
+# install, per stack: a docker-compose@<stack> boot unit + an /etc/cron.d
+# reconcile job calling the shared reconcile-stack.sh helper. Linux-only.
+
+- name: Resiliency — deploy user
+  ansible.builtin.set_fact:
+    deploy_user: "{{ ansible_facts['user_id'] }}"
+
+- name: Resiliency — ensure helper + node-exporter textfile dirs
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ resiliency_helper_dir }}"
+    - "{{ resiliency_textfile_dir }}"
+  become: true
+
+- name: Resiliency — install shared reconcile-stack.sh
+  ansible.builtin.copy:
+    src: reconcile-stack.sh
+    dest: "{{ resiliency_helper_path }}"
+    mode: "0755"
+  become: true
+
+- name: Resiliency — ensure cron installed (Debian)
+  ansible.builtin.apt:
+    name: cron
+    state: present
+    update_cache: true
+  become: true
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Resiliency — ensure cron installed (Arch)
+  community.general.pacman:
+    name: cronie
+    state: present
+  become: true
+  when: ansible_facts['os_family'] == 'Archlinux'
+
+- name: Resiliency — enable cron service
+  ansible.builtin.systemd:
+    name: "{{ 'cron' if ansible_facts['os_family'] == 'Debian' else 'cronie' }}"
+    enabled: true
+    state: started
+  become: true
+
+- name: Resiliency — which discovery paths exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ resiliency_discovery_paths }}"
+  register: resiliency_path_stats
+
+- name: Resiliency — discover cn-* stack dirs
+  ansible.builtin.find:
+    paths: "{{ resiliency_path_stats.results | selectattr('stat.exists') | map(attribute='item') | list }}"
+    patterns: "cn-*"
+    file_type: directory
+    recurse: false
+  register: resiliency_dirs
+
+- name: Resiliency — stat resiliency.yml in each candidate
+  ansible.builtin.stat:
+    path: "{{ item.path }}/resiliency.yml"
+  loop: "{{ resiliency_dirs.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: resiliency_manifest_stats
+
+- name: Resiliency — dirs that have a manifest
+  ansible.builtin.set_fact:
+    resiliency_manifest_dirs: "{{ resiliency_manifest_stats.results | selectattr('stat.exists') | map(attribute='item.path') | list }}"
+
+- name: Resiliency — read manifests (from target)
+  ansible.builtin.slurp:
+    src: "{{ item }}/resiliency.yml"
+  loop: "{{ resiliency_manifest_dirs }}"
+  register: resiliency_slurped
+
+- name: Resiliency — build stack list
+  ansible.builtin.set_fact:
+    resiliency_stacks: "{{ resiliency_stacks | default([]) + [stack] }}"
+  vars:
+    m: "{{ (item.content | b64decode | from_yaml) or {} }}"
+    nm: "{{ item.item | basename }}"
+    stack:
+      name: "{{ nm }}"
+      dir: "{{ item.item }}"
+      project: "{{ m.project | default(nm) }}"
+      boot: "{{ m.boot | default({}) }}"
+      reconcile: "{{ m.reconcile | default({}) }}"
+      cron: "{{ m.cron | default([]) }}"
+  loop: "{{ resiliency_slurped.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Resiliency — template per-stack boot units
+  ansible.builtin.template:
+    src: docker-compose@.service.j2
+    dest: "/etc/systemd/system/docker-compose@{{ item.name }}.service"
+    mode: "0644"
+  loop: "{{ resiliency_stacks | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.boot.enabled | default(false) | bool
+  become: true
+  notify: Reload systemd
+
+- name: Resiliency — reload systemd so new units are visible to enable
+  ansible.builtin.meta: flush_handlers
+
+- name: Resiliency — enable per-stack boot units (do NOT start running stacks)
+  ansible.builtin.systemd:
+    name: "docker-compose@{{ item.name }}.service"
+    enabled: true
+  loop: "{{ resiliency_stacks | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.boot.enabled | default(false) | bool
+  become: true
+
+- name: Resiliency — install /etc/cron.d reconcile (+ stack-specific cron)
+  ansible.builtin.template:
+    src: reconcile.cron.j2
+    dest: "/etc/cron.d/{{ item.name }}-reconcile"
+    mode: "0644"
+    owner: root
+    group: root
+  loop: "{{ resiliency_stacks | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: (item.reconcile.enabled | default(false) | bool) or (item.cron | default([]) | length > 0)
+  become: true

@@ -1,1 +1,18 @@
 ---
+# Resiliency feature: discover cn-* compose stacks that ship a `resiliency.yml`
+# manifest and install per-stack boot units + reconcile cron. Linux-only
+# (systemd + cron); silently skipped on macOS.
+resiliency_enabled: true
+
+# Where to look for stacks (each is a dir containing docker-compose.yml + resiliency.yml).
+resiliency_discovery_paths:
+  - "{{ ansible_env.HOME }}"
+  - "{{ ansible_env.HOME }}/dev"
+
+# Host dir where reconcile-stack.sh writes node-exporter textfile metrics.
+# The designated per-host node-exporter mounts this read-only.
+resiliency_textfile_dir: /var/lib/node_exporter/textfile_collector
+
+# Where the shared helper is installed.
+resiliency_helper_dir: /usr/local/lib/amun
+resiliency_helper_path: "{{ resiliency_helper_dir }}/reconcile-stack.sh"

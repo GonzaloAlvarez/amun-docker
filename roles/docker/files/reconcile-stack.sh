@@ -1,0 +1,110 @@
+#!/bin/bash
+# reconcile-stack.sh <project> <working_dir> — per-stack resilience reconciler.
+#
+# Installed by amun-docker (roles/docker). Invoked per stack by
+# /etc/cron.d/<stack>-reconcile every few minutes. Repairs the three container
+# states that survive an ungraceful reboot / sidecar restart but that Docker's
+# own restart policy does NOT recover:
+#
+#   1. EXITED non-oneshot service containers  → start them (the class the old
+#      host-wide netns-reconcile missed; caused the 2026-07-03 outage).
+#   2. NETNS DRIFT — running container whose `network_mode: container:<id>`
+#      points at a dead namespace → force-recreate (superseded netns-reconcile).
+#   3. STUCK UNHEALTHY — Up + unhealthy for ≥ STUCK_AGE_SECONDS → force-recreate.
+#
+# All repairs use `docker compose -p <project> up -d [--force-recreate] --no-deps`.
+# Idempotent: silent no-op when the stack is clean. Emits a node-exporter
+# textfile metric each run so execution is observable (Resilience dashboard).
+#
+# One-shot / init containers are never touched (they're *meant* to be Exited(0)).
+set -o pipefail
+
+PROJECT="$1"
+WDIR="$2"
+TEXTFILE_DIR="${RESILIENCE_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
+STUCK_AGE_SECONDS="${RESILIENCE_STUCK_AGE_SECONDS:-300}"
+HOSTLABEL="$(hostname -s 2>/dev/null || hostname)"
+
+# Compose service names that are intentionally short-lived — never "repair".
+SKIP_RE='(^|[-_])(init|migrate|migrations|db-migrations|waitforinfra|mount-precheck|portainer-init|ca-bundle|ca-cert|pg-dump|mysql-dump|outline-init)([-_]|$)'
+
+log() { logger -t "reconcile-stack[$PROJECT]" -- "$*" 2>/dev/null; echo "[reconcile-stack:$PROJECT] $*"; }
+
+[ -n "$PROJECT" ] && [ -d "$WDIR" ] || { echo "usage: $0 <project> <working_dir>" >&2; exit 2; }
+command -v docker >/dev/null 2>&1 || { echo "docker not found" >&2; exit 2; }
+cd "$WDIR" || exit 2
+
+dc()      { docker compose -p "$PROJECT" "$@"; }
+svc_of()  { docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$1" 2>/dev/null; }
+by_proj() { docker ps "$@" --filter "label=com.docker.compose.project=$PROJECT" -q; }
+
+start_ts=$(date +%s)
+repairs=0
+success=1
+
+# ── 1. EXITED non-oneshot service containers ────────────────────────────────
+exited=""
+for cid in $(by_proj -a --filter status=exited); do
+  s=$(svc_of "$cid"); [ -z "$s" ] && continue
+  printf '%s\n' "$s" | grep -Eq "$SKIP_RE" && continue
+  exited="$exited $s"
+done
+exited=$(printf '%s\n' $exited | sort -u | tr '\n' ' ')
+if [ -n "${exited// /}" ]; then
+  log "starting exited service(s): $exited"
+  if dc up -d --no-deps $exited; then repairs=$((repairs + $(printf '%s\n' $exited | grep -c .))); else success=0; log "ERROR starting exited"; fi
+fi
+
+# ── 2/3. netns drift + stuck-unhealthy among RUNNING containers ─────────────
+now=$(date +%s)
+recreate=""
+for cid in $(by_proj); do
+  reason=""
+  nm=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null)
+  if [[ "$nm" =~ ^container:([a-f0-9]+) ]]; then
+    docker inspect "${BASH_REMATCH[1]}" >/dev/null 2>&1 || reason="netns-drift"
+  fi
+  if [ -z "$reason" ]; then
+    h=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null)
+    if [ "$h" = "unhealthy" ]; then
+      st=$(docker inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null)
+      se=$(date -d "$st" +%s 2>/dev/null || echo "$now")
+      [ $((now - se)) -ge "$STUCK_AGE_SECONDS" ] && reason="stuck-unhealthy"
+    fi
+  fi
+  [ -z "$reason" ] && continue
+  s=$(svc_of "$cid"); [ -z "$s" ] && continue
+  log "$s: $reason"
+  recreate="$recreate $s"
+done
+recreate=$(printf '%s\n' $recreate | sort -u | tr '\n' ' ')
+if [ -n "${recreate// /}" ]; then
+  log "force-recreating: $recreate"
+  if dc up -d --force-recreate --no-deps $recreate; then repairs=$((repairs + $(printf '%s\n' $recreate | grep -c .))); else success=0; log "ERROR force-recreating"; fi
+fi
+
+# ── emit node-exporter textfile metrics ─────────────────────────────────────
+if mkdir -p "$TEXTFILE_DIR" 2>/dev/null; then
+  state="$TEXTFILE_DIR/.resilience_${PROJECT}.count"
+  prev=$(cat "$state" 2>/dev/null || echo 0); case "$prev" in ''|*[!0-9]*) prev=0;; esac
+  total=$((prev + repairs)); echo "$total" > "$state" 2>/dev/null
+  dur=$(( $(date +%s) - start_ts ))
+  tmp="$TEXTFILE_DIR/.resilience_${PROJECT}.prom.$$"
+  {
+    echo '# HELP resilience_reconcile_last_run_seconds Unix time of the last reconcile run.'
+    echo '# TYPE resilience_reconcile_last_run_seconds gauge'
+    echo "resilience_reconcile_last_run_seconds{stack=\"$PROJECT\",host=\"$HOSTLABEL\"} $(date +%s)"
+    echo '# HELP resilience_reconcile_success 1 if the last run completed without error, else 0.'
+    echo '# TYPE resilience_reconcile_success gauge'
+    echo "resilience_reconcile_success{stack=\"$PROJECT\",host=\"$HOSTLABEL\"} $success"
+    echo '# HELP resilience_reconcile_repairs_total Cumulative container repairs performed.'
+    echo '# TYPE resilience_reconcile_repairs_total counter'
+    echo "resilience_reconcile_repairs_total{stack=\"$PROJECT\",host=\"$HOSTLABEL\"} $total"
+    echo '# HELP resilience_reconcile_duration_seconds Duration of the last reconcile run.'
+    echo '# TYPE resilience_reconcile_duration_seconds gauge'
+    echo "resilience_reconcile_duration_seconds{stack=\"$PROJECT\",host=\"$HOSTLABEL\"} $dur"
+  } > "$tmp" && mv "$tmp" "$TEXTFILE_DIR/resilience_${PROJECT}.prom"
+fi
+
+[ "$repairs" -gt 0 ] && log "done: $repairs repair(s)"
+exit 0

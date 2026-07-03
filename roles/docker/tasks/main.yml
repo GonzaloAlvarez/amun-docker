@@ -117,3 +117,9 @@
   ansible.builtin.command: docker-compose version
   changed_when: false
   when: ansible_facts['os_family'] != 'Debian'
+
+- name: Install per-stack resiliency (boot units + reconcile cron)
+  ansible.builtin.import_tasks: resiliency.yml
+  when:
+    - resiliency_enabled | bool
+    - ansible_facts['os_family'] != 'Darwin'
