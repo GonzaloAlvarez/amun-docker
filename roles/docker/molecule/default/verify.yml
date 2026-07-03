@@ -125,3 +125,36 @@
         that:
           - "'resilience_reconcile_success{stack=\"cn-mock-simple\"' in (prom.content | b64decode)"
           - "'resilience_reconcile_repairs_total' in (prom.content | b64decode)"
+
+    # ── resiliency: FUNCTIONAL — the network-detachment repair path ──────
+    # Reproduce the 2026-07-03 reboot glitch: a container left RUNNING but with
+    # its network endpoint gone (loki/promtail came up before their net existed).
+    - name: Detach the running mock container from its network
+      ansible.builtin.command: docker network disconnect cn-mock-simple_default cn-mock-simple-sleeper-1
+      changed_when: true
+
+    - name: Precondition — it is now network-detached (0 networks) but still running
+      ansible.builtin.command: docker inspect -f '{{ "{{" }}len .NetworkSettings.Networks{{ "}}" }} {{ "{{" }}.State.Status{{ "}}" }}' cn-mock-simple-sleeper-1
+      register: nets_before
+      changed_when: false
+    - ansible.builtin.assert:
+        that:
+          - "nets_before.stdout.split()[0] == '0'"
+          - "'running' in nets_before.stdout"
+        fail_msg: "precondition failed: {{ nets_before.stdout }}"
+
+    - name: Run the reconcile helper (must detect net-detached + force-recreate)
+      ansible.builtin.command: /usr/local/lib/amun/reconcile-stack.sh cn-mock-simple {{ ansible_env.HOME }}/cn-mock-simple
+      environment:
+        RESILIENCE_TEXTFILE_DIR: /var/lib/node_exporter/textfile_collector
+      changed_when: true
+
+    - name: Container is reattached to a network + running again
+      ansible.builtin.command: docker inspect -f '{{ "{{" }}len .NetworkSettings.Networks{{ "}}" }} {{ "{{" }}.State.Status{{ "}}" }}' cn-mock-simple-sleeper-1
+      register: nets_after
+      changed_when: false
+    - ansible.builtin.assert:
+        that:
+          - "nets_after.stdout.split()[0] | int >= 1"
+          - "'running' in nets_after.stdout"
+        fail_msg: "reconcile did not reattach the network-detached container ({{ nets_after.stdout }})"

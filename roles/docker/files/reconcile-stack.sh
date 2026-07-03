@@ -2,7 +2,7 @@
 # reconcile-stack.sh <project> <working_dir> — per-stack resilience reconciler.
 #
 # Installed by amun-docker (roles/docker). Invoked per stack by
-# /etc/cron.d/<stack>-reconcile every few minutes. Repairs the three container
+# /etc/cron.d/<stack>-reconcile every few minutes. Repairs the four container
 # states that survive an ungraceful reboot / sidecar restart but that Docker's
 # own restart policy does NOT recover:
 #
@@ -10,7 +10,11 @@
 #      host-wide netns-reconcile missed; caused the 2026-07-03 outage).
 #   2. NETNS DRIFT — running container whose `network_mode: container:<id>`
 #      points at a dead namespace → force-recreate (superseded netns-reconcile).
-#   3. STUCK UNHEALTHY — Up + unhealthy for ≥ STUCK_AGE_SECONDS → force-recreate.
+#   3. NET-DETACHED — running container on a bridge/named network but with 0
+#      attached endpoints (started before its network existed on an ungraceful
+#      boot; `up -d` then saw it "running" and left it) → force-recreate. This
+#      is the loki/promtail failure the 2026-07-03 reboot test surfaced.
+#   4. STUCK UNHEALTHY — Up + unhealthy for ≥ STUCK_AGE_SECONDS → force-recreate.
 #
 # All repairs use `docker compose -p <project> up -d [--force-recreate] --no-deps`.
 # Idempotent: silent no-op when the stack is clean. Emits a node-exporter
@@ -60,7 +64,7 @@ if [ -n "${exited// /}" ]; then
   if dc up -d --no-deps $exited; then repairs=$((repairs + $(printf '%s\n' $exited | grep -c .))); else success=0; log "ERROR starting exited"; fi
 fi
 
-# ── 2/3. netns drift + stuck-unhealthy among RUNNING containers ─────────────
+# ── 2/3/4. netns drift + net-detachment + stuck-unhealthy among RUNNING ──────
 now=$(date +%s)
 recreate=""
 for cid in $(by_proj); do
@@ -68,6 +72,12 @@ for cid in $(by_proj); do
   nm=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null)
   if [[ "$nm" =~ ^container:([a-f0-9]+) ]]; then
     docker inspect "${BASH_REMATCH[1]}" >/dev/null 2>&1 || reason="netns-drift"
+  elif [ "$nm" != host ] && [ "$nm" != none ]; then
+    # On a bridge/named network but with NO attached endpoint: the container is
+    # running yet unreachable by peers (ungraceful-reboot glitch — it started
+    # before its network existed, then `up -d` saw it "running" and left it).
+    nets=$(docker inspect -f '{{len .NetworkSettings.Networks}}' "$cid" 2>/dev/null)
+    [ "$nets" = 0 ] && reason="net-detached"
   fi
   if [ -z "$reason" ]; then
     h=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid" 2>/dev/null)
