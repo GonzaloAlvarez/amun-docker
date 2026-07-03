@@ -89,8 +89,19 @@ if mkdir -p "$TEXTFILE_DIR" 2>/dev/null; then
   prev=$(cat "$state" 2>/dev/null || echo 0); case "$prev" in ''|*[!0-9]*) prev=0;; esac
   total=$((prev + repairs)); echo "$total" > "$state" 2>/dev/null
   dur=$(( $(date +%s) - start_ts ))
+  # Boot-unit health (avoids needing node-exporter's systemd collector): the
+  # unit name is docker-compose@<dir-basename>.service.
+  unit="docker-compose@$(basename "$WDIR").service"
+  boot_active=0; systemctl is-active --quiet "$unit" 2>/dev/null && boot_active=1
+  boot_enabled=0; systemctl is-enabled --quiet "$unit" 2>/dev/null && boot_enabled=1
   tmp="$TEXTFILE_DIR/.resilience_${PROJECT}.prom.$$"
   {
+    echo '# HELP resilience_boot_unit_active 1 if the docker-compose@<stack> boot unit is active.'
+    echo '# TYPE resilience_boot_unit_active gauge'
+    echo "resilience_boot_unit_active{stack=\"$PROJECT\",host=\"$HOSTLABEL\"} $boot_active"
+    echo '# HELP resilience_boot_unit_enabled 1 if the boot unit is enabled at boot.'
+    echo '# TYPE resilience_boot_unit_enabled gauge'
+    echo "resilience_boot_unit_enabled{stack=\"$PROJECT\",host=\"$HOSTLABEL\"} $boot_enabled"
     echo '# HELP resilience_reconcile_last_run_seconds Unix time of the last reconcile run.'
     echo '# TYPE resilience_reconcile_last_run_seconds gauge'
     echo "resilience_reconcile_last_run_seconds{stack=\"$PROJECT\",host=\"$HOSTLABEL\"} $(date +%s)"
