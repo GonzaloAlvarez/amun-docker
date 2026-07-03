@@ -5,7 +5,14 @@
 # lost on an ungraceful reboot). Ongoing drift/exited repair is handled by the
 # /etc/cron.d/{{ item.name }}-reconcile job.
 {% set b = item.boot %}
-{% set after = ['docker.service', 'network-online.target'] + (b.after | default([]) | map('regex_replace', '^(.+)$', 'docker-compose@\\1.service') | list) %}
+{# systemd .mount unit name for the NFS path, matching `systemd-escape -p
+   --suffix=mount`: strip leading/trailing slashes, escape literal '-' to
+   '\x2d' (it is the path separator in the escaped name), then '/' -> '-'.
+   `replace` (plain string sub) is used for the escape so re.sub never sees a
+   bad '\x' escape. #}
+{% set _p = (b.nfs_mount | default('')) | regex_replace('^/+', '') | regex_replace('/+$', '') %}
+{% set mount_unit = (_p | replace('-', '\\x2d') | replace('/', '-')) ~ '.mount' if (b.nfs_mount is defined and b.nfs_mount) else '' %}
+{% set after = ['docker.service', 'network-online.target'] + ([mount_unit] if mount_unit else []) + (b.after | default([]) | map('regex_replace', '^(.+)$', 'docker-compose@\\1.service') | list) %}
 [Unit]
 Description={{ item.name }} docker compose stack (amun-docker resiliency)
 Requires=docker.service
@@ -15,6 +22,13 @@ Wants=network-online.target
 # RequiresMountsFor implicitly adds Requires= + After= on the mount unit, so the
 # stack can never start before the NFS share is mounted.
 RequiresMountsFor={{ b.nfs_mount }}
+{% if b.binds_to_mount | default(false) %}
+# BindsTo: if the NFS mount unit itself FAILS (mount timeout — 2026-06-22),
+# tear the stack down instead of leaving it bound to the empty local
+# placeholder dir. `hard,_netdev` mounts don't change .mount state on a
+# transient blip (I/O just blocks), so this won't flap on momentary outages.
+BindsTo={{ mount_unit }}
+{% endif %}
 {% endif %}
 
 [Service]
@@ -28,6 +42,11 @@ Environment="PWD={{ item.dir }}"
 ExecStartPre=/usr/bin/mountpoint -q {{ b.nfs_mount }}
 # Assert it is REALLY nfs, not the empty local placeholder a failed mount leaves.
 ExecStartPre=/bin/sh -c '[ "$(stat -f -c %%T {{ b.nfs_mount }})" = nfs ]'
+{% for p in b.require_paths | default([]) %}
+# Belt-and-suspenders: bail before docker compose sees the bind sources if a
+# required subtree is missing (e.g. the NFS share mounted but not populated).
+ExecStartPre=/usr/bin/test -d {{ p }}
+{% endfor %}
 {% endif %}
 ExecStart=/usr/bin/docker compose -p {{ item.project }} up -d --remove-orphans{% if b.force_recreate | default(false) %} --force-recreate{% endif %}
 

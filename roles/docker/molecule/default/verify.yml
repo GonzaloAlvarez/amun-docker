@@ -40,7 +40,7 @@
     - ansible.builtin.assert:
         that: "'enabled' in en.stdout"
 
-    - name: NFS unit rendered the mount gating + force-recreate + ordering
+    - name: NFS unit rendered the mount gating + force-recreate + ordering + BindsTo + require_paths
       ansible.builtin.slurp:
         src: /etc/systemd/system/docker-compose@cn-mock-nfs.service
       register: nfsunit
@@ -50,6 +50,16 @@
           - "'--force-recreate' in (nfsunit.content | b64decode)"
           - "'docker-compose@cn-mock-simple.service' in (nfsunit.content | b64decode)"
           - "'stat -f -c' in (nfsunit.content | b64decode)"
+          # BindsTo must use the systemd-escaped .mount name (dash -> \x2d),
+          # matching `systemd-escape -p --suffix=mount /mnt/mock-nfs` =
+          # mnt-mock\x2dnfs.mount. The two brackets can only be adjacent across
+          # the escaped separator backslash (asserting the literal backslash
+          # directly is unreliable — Ansible's conditional templating collapses
+          # \x2d).
+          - "'BindsTo=mnt-mock' in (nfsunit.content | b64decode)"
+          - "'x2dnfs.mount' in (nfsunit.content | b64decode)"
+          # require_paths -> ExecStartPre test -d
+          - "'test -d /mnt/mock-nfs/data' in (nfsunit.content | b64decode)"
 
     - name: Reconcile cron calls the shared helper
       ansible.builtin.slurp:

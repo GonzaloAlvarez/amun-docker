@@ -57,6 +57,9 @@
           boot:
             enabled: true
             nfs_mount: /mnt/mock-nfs
+            binds_to_mount: true
+            require_paths:
+              - /mnt/mock-nfs/data
             after: [cn-mock-simple]
             force_recreate: true
           reconcile: { enabled: true }

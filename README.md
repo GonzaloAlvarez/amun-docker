@@ -47,7 +47,12 @@ idempotently. Stacks without a `resiliency.yml` are skipped.
 project: cn-media          # optional; default = repo dir basename (compose -p)
 boot:
   enabled: true
-  nfs_mount: /path/to/nfs  # optional → RequiresMountsFor + stat-f nfs precheck
+  nfs_mount: /path/to/nfs  # optional → RequiresMountsFor + mountpoint/stat-f nfs precheck
+  binds_to_mount: true     # optional → BindsTo the derived .mount unit (tear the
+                           #   stack down if the NFS mount itself fails, rather than
+                           #   leaving it bound to the empty local placeholder dir)
+  require_paths:           # optional → ExecStartPre `test -d` for each subtree
+    - /path/to/nfs/movies  #   (bail before compose sees a missing bind source)
   after: [cn-bittorrent]   # optional → serial boot ordering (other stacks)
   force_recreate: false    # optional → `up -d --force-recreate` on boot
 reconcile:
