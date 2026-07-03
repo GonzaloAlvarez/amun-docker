@@ -67,6 +67,13 @@
           cron:
             - { name: prune, schedule: "0 4 * * *", script: scripts/prune.sh }
 
+    - name: Mock working_dir target for cn-mock-nfs (working_dir != discovered dir)
+      ansible.builtin.file:
+        path: /opt/mock-nfs
+        state: directory
+        mode: "0755"
+      become: true
+
     - name: Mock custom cron script
       ansible.builtin.copy:
         dest: "{{ ansible_env.HOME }}/cn-mock-nfs/scripts/prune.sh"

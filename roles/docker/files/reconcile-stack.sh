@@ -21,6 +21,11 @@ set -o pipefail
 
 PROJECT="$1"
 WDIR="$2"
+# Boot-unit basename. Defaults to basename(WDIR), which equals the stack name
+# for a normally-located stack; passed explicitly when working_dir differs from
+# the discovered dir (e.g. a stub cn-* dir with working_dir=/opt/<x>), so the
+# boot-unit health metric checks docker-compose@<stack>, not @<working-dir>.
+UNIT_NAME="${3:-}"
 TEXTFILE_DIR="${RESILIENCE_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
 STUCK_AGE_SECONDS="${RESILIENCE_STUCK_AGE_SECONDS:-300}"
 HOSTLABEL="$(hostname -s 2>/dev/null || hostname)"
@@ -91,7 +96,7 @@ if mkdir -p "$TEXTFILE_DIR" 2>/dev/null; then
   dur=$(( $(date +%s) - start_ts ))
   # Boot-unit health (avoids needing node-exporter's systemd collector): the
   # unit name is docker-compose@<dir-basename>.service.
-  unit="docker-compose@$(basename "$WDIR").service"
+  unit="docker-compose@${UNIT_NAME:-$(basename "$WDIR")}.service"
   boot_active=0; systemctl is-active --quiet "$unit" 2>/dev/null && boot_active=1
   boot_enabled=0; systemctl is-enabled --quiet "$unit" 2>/dev/null && boot_enabled=1
   tmp="$TEXTFILE_DIR/.resilience_${PROJECT}.prom.$$"

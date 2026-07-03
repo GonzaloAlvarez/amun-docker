@@ -71,12 +71,26 @@
     - ansible.builtin.assert:
         that: "'/usr/local/lib/amun/reconcile-stack.sh cn-mock-simple' in (cronf.content | b64decode)"
 
-    - name: Reconcile cron passes the working_dir override (cn-mock-nfs -> /opt/mock-nfs)
+    - name: Reconcile cron passes project + working_dir + unit-name (3-arg form)
       ansible.builtin.slurp:
         src: /etc/cron.d/cn-mock-nfs-reconcile
       register: cronnfs
     - ansible.builtin.assert:
-        that: "'reconcile-stack.sh cn-mock-nfs /opt/mock-nfs' in (cronnfs.content | b64decode)"
+        that: "'reconcile-stack.sh cn-mock-nfs /opt/mock-nfs cn-mock-nfs' in (cronnfs.content | b64decode)"
+
+    # Regression: with working_dir != stack name, the boot-unit health metric
+    # must resolve docker-compose@<stack> (from arg3), NOT @<basename working_dir>.
+    - name: Run reconcile for the working_dir-override stack
+      ansible.builtin.command: /usr/local/lib/amun/reconcile-stack.sh cn-mock-nfs /opt/mock-nfs cn-mock-nfs
+      environment:
+        RESILIENCE_TEXTFILE_DIR: /var/lib/node_exporter/textfile_collector
+      changed_when: true
+    - name: Its metric reports the real (enabled) unit=1, not @mock-nfs=0
+      ansible.builtin.command:
+        cmd: grep -Eq 'resilience_boot_unit_enabled\{stack="cn-mock-nfs"[^}]*\} 1' /var/lib/node_exporter/textfile_collector/resilience_cn-mock-nfs.prom
+      changed_when: false
+      # non-zero exit (no match) fails the task → proves arg3 resolved
+      # docker-compose@cn-mock-nfs (enabled), not @mock-nfs (basename working_dir)
 
     # ── resiliency: FUNCTIONAL — the exited-container repair path ─────────
     - name: Bring the mock stack up

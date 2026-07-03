@@ -3,7 +3,7 @@
 # Do not edit by hand. Read by the system cron daemon from /etc/cron.d.
 RESILIENCE_TEXTFILE_DIR={{ resiliency_textfile_dir }}
 {% if item.reconcile.enabled | default(false) | bool %}
-{{ item.reconcile.schedule | default('*/5 * * * *') }} root {{ resiliency_helper_path }} {{ item.project }} {{ item.working_dir }}
+{{ item.reconcile.schedule | default('*/5 * * * *') }} root {{ resiliency_helper_path }} {{ item.project }} {{ item.working_dir }} {{ item.name }}
 {% endif %}
 {% for c in item.cron | default([]) %}
 {{ c.schedule }} root {{ item.dir }}/{{ c.script }}
