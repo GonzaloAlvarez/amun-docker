@@ -8,8 +8,11 @@
 #
 #   1. EXITED non-oneshot service containers  → start them (the class the old
 #      host-wide netns-reconcile missed; caused the 2026-07-03 outage).
-#   2. NETNS DRIFT — running container whose `network_mode: container:<id>`
-#      points at a dead namespace → force-recreate (superseded netns-reconcile).
+#   2. NETNS DRIFT — running `network_mode: container:<id>` dependent whose
+#      sidecar is gone (dead target) OR alive-but-restarted-into-a-new-netns
+#      (stale: dependent stuck in the sidecar's old dead netns, so it's
+#      unreachable via the sidecar's current netns / published ports — the
+#      cn-fitness case the 2026-07-03 reboot test surfaced) → force-recreate.
 #   3. NET-DETACHED — running container on a bridge/named network but with 0
 #      attached endpoints (started before its network existed on an ungraceful
 #      boot; `up -d` then saw it "running" and left it) → force-recreate. This
@@ -71,7 +74,24 @@ for cid in $(by_proj); do
   reason=""
   nm=$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cid" 2>/dev/null)
   if [[ "$nm" =~ ^container:([a-f0-9]+) ]]; then
-    docker inspect "${BASH_REMATCH[1]}" >/dev/null 2>&1 || reason="netns-drift"
+    tgt="${BASH_REMATCH[1]}"
+    if ! docker inspect "$tgt" >/dev/null 2>&1; then
+      reason="netns-drift"                    # sidecar target is gone entirely
+    else
+      # Target alive — but if it RESTARTED it owns a NEW netns while this
+      # dependent is still bound to the target's old (dead) netns: it serves on
+      # its own localhost yet is unreachable via the sidecar's current netns /
+      # published ports. Compare actual netns inodes; only act on a definite
+      # mismatch (both readable — needs root, which the cron has), never on a
+      # read failure, so a non-root/racy run can't false-recreate.
+      tpid=$(docker inspect "$tgt" -f '{{.State.Pid}}' 2>/dev/null)
+      dpid=$(docker inspect "$cid" -f '{{.State.Pid}}' 2>/dev/null)
+      if [ -n "$tpid" ] && [ "$tpid" != 0 ] && [ -n "$dpid" ] && [ "$dpid" != 0 ]; then
+        tns=$(readlink "/proc/$tpid/ns/net" 2>/dev/null)
+        dns=$(readlink "/proc/$dpid/ns/net" 2>/dev/null)
+        [ -n "$tns" ] && [ -n "$dns" ] && [ "$tns" != "$dns" ] && reason="netns-stale"
+      fi
+    fi
   elif [ "$nm" != host ] && [ "$nm" != none ]; then
     # On a bridge/named network but with NO attached endpoint: the container is
     # running yet unreachable by peers (ungraceful-reboot glitch — it started

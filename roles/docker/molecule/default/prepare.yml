@@ -26,6 +26,7 @@
         - "{{ ansible_env.HOME }}/cn-mock-simple"
         - "{{ ansible_env.HOME }}/cn-mock-nfs"
         - "{{ ansible_env.HOME }}/cn-mock-nfs/scripts"
+        - "{{ ansible_env.HOME }}/cn-mock-netns"
 
     - name: Mock compose files (a single long-running service)
       ansible.builtin.copy:
@@ -40,6 +41,26 @@
       loop:
         - cn-mock-simple
         - cn-mock-nfs
+
+    # A sidecar-netns stack (owner + a network_mode:container dependent) to
+    # exercise the netns-stale repair. No resiliency.yml → not a discovered
+    # stack; verify.yml brings it up + runs the helper against it directly.
+    - name: Mock compose — sidecar netns owner + dependent
+      ansible.builtin.copy:
+        dest: "{{ ansible_env.HOME }}/cn-mock-netns/docker-compose.yml"
+        mode: "0644"
+        content: |
+          services:
+            owner:
+              image: alpine:3.20
+              command: ["sleep", "infinity"]
+              restart: "no"
+            dependent:
+              image: alpine:3.20
+              command: ["sleep", "infinity"]
+              network_mode: "service:owner"
+              depends_on: [owner]
+              restart: "no"
 
     - name: Mock manifest — simple stack
       ansible.builtin.copy:

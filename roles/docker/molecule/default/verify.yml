@@ -158,3 +158,43 @@
           - "nets_after.stdout.split()[0] | int >= 1"
           - "'running' in nets_after.stdout"
         fail_msg: "reconcile did not reattach the network-detached container ({{ nets_after.stdout }})"
+
+    # ── resiliency: FUNCTIONAL — the stale-netns (restarted sidecar) repair ──
+    # A network_mode:container dependent whose sidecar RESTARTED into a new netns
+    # is stranded in the old dead netns (the cn-fitness case). The target is
+    # ALIVE, so a dead-target check can't see it — the netns-inode compare must.
+    - name: Bring up the sidecar-netns mock stack
+      ansible.builtin.command: docker compose -p cn-mock-netns up -d
+      args: { chdir: "{{ ansible_env.HOME }}/cn-mock-netns" }
+      changed_when: true
+
+    - name: Restart the netns owner (new netns for it; dependent goes stale)
+      ansible.builtin.command: docker restart cn-mock-netns-owner-1
+      changed_when: true
+
+    - name: Precondition — dependent netns != owner netns (stranded), owner alive
+      ansible.builtin.shell: |
+        op=$(docker inspect cn-mock-netns-owner-1 -f '{{ "{{" }}.State.Pid{{ "}}" }}')
+        dp=$(docker inspect cn-mock-netns-dependent-1 -f '{{ "{{" }}.State.Pid{{ "}}" }}')
+        o=$(readlink /proc/$op/ns/net); d=$(readlink /proc/$dp/ns/net)
+        echo "owner=$o dep=$d"
+        [ -n "$o" ] && [ -n "$d" ] && [ "$o" != "$d" ]
+      register: stale_pre
+      changed_when: false
+
+    - name: Run the reconcile helper (must detect netns-stale + force-recreate)
+      ansible.builtin.command: /usr/local/lib/amun/reconcile-stack.sh cn-mock-netns {{ ansible_env.HOME }}/cn-mock-netns
+      environment:
+        RESILIENCE_TEXTFILE_DIR: /var/lib/node_exporter/textfile_collector
+      changed_when: true
+
+    - name: Dependent rejoined the owner's CURRENT netns + still running
+      ansible.builtin.shell: |
+        op=$(docker inspect cn-mock-netns-owner-1 -f '{{ "{{" }}.State.Pid{{ "}}" }}')
+        dp=$(docker inspect cn-mock-netns-dependent-1 -f '{{ "{{" }}.State.Pid{{ "}}" }}')
+        o=$(readlink /proc/$op/ns/net); d=$(readlink /proc/$dp/ns/net)
+        st=$(docker inspect cn-mock-netns-dependent-1 -f '{{ "{{" }}.State.Status{{ "}}" }}')
+        echo "owner=$o dep=$d status=$st"
+        [ "$o" = "$d" ] && [ "$st" = running ]
+      register: stale_post
+      changed_when: false
