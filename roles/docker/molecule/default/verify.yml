@@ -60,6 +60,9 @@
           - "'x2dnfs.mount' in (nfsunit.content | b64decode)"
           # require_paths -> ExecStartPre test -d
           - "'test -d /mnt/mock-nfs/data' in (nfsunit.content | b64decode)"
+          # working_dir override -> WorkingDirectory + PWD point elsewhere than the discovered dir
+          - "'WorkingDirectory=/opt/mock-nfs' in (nfsunit.content | b64decode)"
+          - "'PWD=/opt/mock-nfs' in (nfsunit.content | b64decode)"
 
     - name: Reconcile cron calls the shared helper
       ansible.builtin.slurp:
@@ -67,6 +70,13 @@
       register: cronf
     - ansible.builtin.assert:
         that: "'/usr/local/lib/amun/reconcile-stack.sh cn-mock-simple' in (cronf.content | b64decode)"
+
+    - name: Reconcile cron passes the working_dir override (cn-mock-nfs -> /opt/mock-nfs)
+      ansible.builtin.slurp:
+        src: /etc/cron.d/cn-mock-nfs-reconcile
+      register: cronnfs
+    - ansible.builtin.assert:
+        that: "'reconcile-stack.sh cn-mock-nfs /opt/mock-nfs' in (cronnfs.content | b64decode)"
 
     # ── resiliency: FUNCTIONAL — the exited-container repair path ─────────
     - name: Bring the mock stack up

@@ -62,6 +62,7 @@
               - /mnt/mock-nfs/data
             after: [cn-mock-simple]
             force_recreate: true
+          working_dir: /opt/mock-nfs
           reconcile: { enabled: true }
           cron:
             - { name: prune, schedule: "0 4 * * *", script: scripts/prune.sh }

@@ -36,8 +36,8 @@ Type=oneshot
 RemainAfterExit=yes
 User={{ deploy_user }}
 Group={{ deploy_user }}
-WorkingDirectory={{ item.dir }}
-Environment="PWD={{ item.dir }}"
+WorkingDirectory={{ item.working_dir }}
+Environment="PWD={{ item.working_dir }}"
 {% if b.nfs_mount is defined and b.nfs_mount %}
 ExecStartPre=/usr/bin/mountpoint -q {{ b.nfs_mount }}
 # Assert it is REALLY nfs, not the empty local placeholder a failed mount leaves.

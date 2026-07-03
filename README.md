@@ -45,6 +45,10 @@ idempotently. Stacks without a `resiliency.yml` are skipped.
 
 ```yaml
 project: cn-media          # optional; default = repo dir basename (compose -p)
+working_dir: /opt/cloudnet # optional; where `docker compose` runs. Default = the
+                           #   discovered dir. Override for a stack deployed away
+                           #   from its repo — e.g. a stub ~/cn-<x> dir (which the
+                           #   cn-* discovery finds) pointing at /opt/<x>.
 boot:
   enabled: true
   nfs_mount: /path/to/nfs  # optional → RequiresMountsFor + mountpoint/stat-f nfs precheck

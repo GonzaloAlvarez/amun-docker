@@ -87,6 +87,10 @@
     stack:
       name: "{{ nm }}"
       dir: "{{ item.item }}"
+      # Where `docker compose` actually runs. Defaults to the discovered dir;
+      # override (via manifest `working_dir:`) for a stack deployed elsewhere
+      # than its repo — e.g. a stub ~/cn-* dir pointing at /opt/<stack>.
+      working_dir: "{{ m.working_dir | default(item.item) }}"
       project: "{{ m.project | default(nm) }}"
       boot: "{{ m.boot | default({}) }}"
       reconcile: "{{ m.reconcile | default({}) }}"
