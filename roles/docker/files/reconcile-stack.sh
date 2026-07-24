@@ -6,8 +6,12 @@
 # states that survive an ungraceful reboot / sidecar restart but that Docker's
 # own restart policy does NOT recover:
 #
-#   1. EXITED non-oneshot service containers  → start them (the class the old
-#      host-wide netns-reconcile missed; caused the 2026-07-03 outage).
+#   1. EXITED or CREATED non-oneshot service containers → start them. EXITED is
+#      the class the old host-wide netns-reconcile missed (the 2026-07-03
+#      outage). CREATED is a compose `up` that died between its create and
+#      start phases (the 2026-07-24 passwords.lan outage: boot unit collided
+#      with this cron's force-recreate) — Docker's restart policy never acts
+#      on a container that has not run at least once, so only we can heal it.
 #   2. NETNS DRIFT — running `network_mode: container:<id>` dependent whose
 #      sidecar is gone (dead target) OR alive-but-restarted-into-a-new-netns
 #      (stale: dependent stuck in the sidecar's old dead netns, so it's
@@ -54,17 +58,18 @@ start_ts=$(date +%s)
 repairs=0
 success=1
 
-# ── 1. EXITED non-oneshot service containers ────────────────────────────────
-exited=""
-for cid in $(by_proj -a --filter status=exited); do
+# ── 1. EXITED / CREATED non-oneshot service containers ──────────────────────
+# (repeated --filter status= flags OR together)
+unstarted=""
+for cid in $(by_proj -a --filter status=exited --filter status=created); do
   s=$(svc_of "$cid"); [ -z "$s" ] && continue
   printf '%s\n' "$s" | grep -Eq "$SKIP_RE" && continue
-  exited="$exited $s"
+  unstarted="$unstarted $s"
 done
-exited=$(printf '%s\n' $exited | sort -u | tr '\n' ' ')
-if [ -n "${exited// /}" ]; then
-  log "starting exited service(s): $exited"
-  if dc up -d --no-deps $exited; then repairs=$((repairs + $(printf '%s\n' $exited | grep -c .))); else success=0; log "ERROR starting exited"; fi
+unstarted=$(printf '%s\n' $unstarted | sort -u | tr '\n' ' ')
+if [ -n "${unstarted// /}" ]; then
+  log "starting exited/created service(s): $unstarted"
+  if dc up -d --no-deps $unstarted; then repairs=$((repairs + $(printf '%s\n' $unstarted | grep -c .))); else success=0; log "ERROR starting exited/created"; fi
 fi
 
 # ── 2/3/4. netns drift + net-detachment + stuck-unhealthy among RUNNING ──────

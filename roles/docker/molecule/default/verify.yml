@@ -159,6 +159,40 @@
           - "'running' in nets_after.stdout"
         fail_msg: "reconcile did not reattach the network-detached container ({{ nets_after.stdout }})"
 
+    # ── resiliency: FUNCTIONAL — the created-never-started repair path ───
+    # Reproduce the 2026-07-24 passwords.lan outage: a boot-unit `up -d` that
+    # aborts between its create and start phases (removal race with this very
+    # cron) leaves containers in CREATED. Docker's restart policy ignores
+    # containers that never ran, so the reconciler must start them.
+    - name: Reset the mock stack to CREATED (compose create, never started)
+      ansible.builtin.shell: |
+        docker compose -p cn-mock-simple down
+        docker compose -p cn-mock-simple create
+      args: { chdir: "{{ ansible_env.HOME }}/cn-mock-simple" }
+      changed_when: true
+
+    - name: Precondition — container is in created state
+      ansible.builtin.command: docker inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' cn-mock-simple-sleeper-1
+      register: created_pre
+      changed_when: false
+    - ansible.builtin.assert:
+        that: "'created' in created_pre.stdout"
+        fail_msg: "precondition failed: {{ created_pre.stdout }}"
+
+    - name: Run the reconcile helper (must start the created container)
+      ansible.builtin.command: /usr/local/lib/amun/reconcile-stack.sh cn-mock-simple {{ ansible_env.HOME }}/cn-mock-simple
+      environment:
+        RESILIENCE_TEXTFILE_DIR: /var/lib/node_exporter/textfile_collector
+      changed_when: true
+
+    - name: Sleeper is running (created container was started)
+      ansible.builtin.command: docker inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' cn-mock-simple-sleeper-1
+      register: created_post
+      changed_when: false
+    - ansible.builtin.assert:
+        that: "'running' in created_post.stdout"
+        fail_msg: "reconcile did not start the created container ({{ created_post.stdout }})"
+
     # ── resiliency: FUNCTIONAL — the stale-netns (restarted sidecar) repair ──
     # A network_mode:container dependent whose sidecar RESTARTED into a new netns
     # is stranded in the old dead netns (the cn-fitness case). The target is
